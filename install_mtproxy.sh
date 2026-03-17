@@ -40,6 +40,7 @@ CURRENT_SECRET=""
 CURRENT_EXTERNAL_PORT=""
 CURRENT_INTERNAL_PORT=""
 CURRENT_ADTAG=""
+MANAGEMENT_SCRIPT_PATH=""
 
 COMMAND="install"
 CLI_ADTAG_VALUE=""
@@ -65,6 +66,43 @@ print_header() {
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+get_management_script_path() {
+    if [ -n "$MANAGEMENT_SCRIPT_PATH" ]; then
+        printf '%s\n' "$MANAGEMENT_SCRIPT_PATH"
+        return 0
+    fi
+
+    if [ -x "$INSTALLED_SCRIPT_PATH" ]; then
+        MANAGEMENT_SCRIPT_PATH="$INSTALLED_SCRIPT_PATH"
+    else
+        MANAGEMENT_SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || true)"
+
+        if [ -z "$MANAGEMENT_SCRIPT_PATH" ] && command_exists realpath; then
+            MANAGEMENT_SCRIPT_PATH="$(realpath "$0" 2>/dev/null || true)"
+        fi
+
+        if [ -z "$MANAGEMENT_SCRIPT_PATH" ]; then
+            MANAGEMENT_SCRIPT_PATH="$0"
+        fi
+    fi
+
+    printf '%s\n' "$MANAGEMENT_SCRIPT_PATH"
+}
+
+format_script_command() {
+    local script_path=""
+    local arg=""
+
+    script_path="$(get_management_script_path)"
+    printf 'sudo %q' "$script_path"
+
+    for arg in "$@"; do
+        printf ' %s' "$arg"
+    done
+
+    printf '\n'
 }
 
 ensure_script_available() {
@@ -480,15 +518,15 @@ print_management_commands() {
     echo "• Проверить работу внешнего порта:"
     echo "sudo ss -tulnp | grep mtproto-proxy"
     echo "• Изменить порт:"
-    echo "sudo $SCRIPT_NAME reinstall"
+    format_script_command reinstall
     echo "• Изменить секрет:"
-    echo "sudo $SCRIPT_NAME update-secret"
+    format_script_command update-secret
     echo "• Изменить или установить adtag:"
-    echo "sudo $SCRIPT_NAME update-adtag"
+    format_script_command update-adtag
     echo "• Удалить adtag:"
-    echo "sudo $SCRIPT_NAME update-adtag clear"
+    format_script_command update-adtag clear
     echo "• Удалить полностью:"
-    echo "sudo $SCRIPT_NAME delete"
+    format_script_command delete
 }
 
 print_proxy_links() {
@@ -535,7 +573,7 @@ print_mtproxy_details() {
     if [ -n "$CURRENT_ADTAG" ]; then
         echo -e "${GREEN}*${NC} adtag: ${CURRENT_ADTAG}"
     else
-        print_warning "adtag пока не задан. После регистрации прокси в @MTProxybot выполните: sudo $SCRIPT_NAME update-adtag"
+        print_warning "adtag пока не задан. После регистрации прокси в @MTProxybot выполните: $(format_script_command update-adtag)"
     fi
 
     if [ -n "$public_ipv4" ]; then
@@ -555,7 +593,7 @@ print_adtag_help() {
     print_header "Реклама через @MTProxybot"
     echo "adtag можно получить только после того, как секрет уже известен и прокси зарегистрирован в @MTProxybot."
     echo "Поэтому базовая установка сначала запускает прокси, а adtag можно применить сразу после получения или позже отдельной командой."
-    echo "Команда для смены adtag: sudo $SCRIPT_NAME update-adtag"
+    echo "Команда для смены adtag: $(format_script_command update-adtag)"
 }
 
 apply_adtag_change() {
@@ -633,8 +671,8 @@ update_mtproxy_adtag() {
         requested_adtag="$CLI_ADTAG_VALUE"
     else
         if [ ! -t 0 ]; then
-            print_error "Для неинтерактивного режима передайте adtag так: sudo $SCRIPT_NAME update-adtag <ADTAG>"
-            print_error "Чтобы удалить adtag, используйте: sudo $SCRIPT_NAME update-adtag clear"
+            print_error "Для неинтерактивного режима передайте adtag так: $(format_script_command update-adtag ADTAG)"
+            print_error "Чтобы удалить adtag, используйте: $(format_script_command update-adtag clear)"
             exit 1
         fi
 
