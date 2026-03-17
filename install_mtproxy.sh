@@ -41,6 +41,7 @@ CURRENT_EXTERNAL_PORT=""
 CURRENT_INTERNAL_PORT=""
 CURRENT_ADTAG=""
 MANAGEMENT_SCRIPT_PATH=""
+ORIGINAL_SCRIPT_PATH="${MTPROXY_SCRIPT_ORIGINAL_PATH:-}"
 
 COMMAND="install"
 CLI_ADTAG_VALUE=""
@@ -68,24 +69,51 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+resolve_script_path() {
+    local input_path="$1"
+    local candidate_path=""
+    local resolved_path=""
+
+    [ -n "$input_path" ] || return 1
+
+    if [[ "$input_path" == */* ]]; then
+        candidate_path="$input_path"
+    else
+        candidate_path="$(command -v "$input_path" 2>/dev/null || true)"
+        if [ -z "$candidate_path" ]; then
+            candidate_path="$input_path"
+        fi
+    fi
+
+    resolved_path="$(readlink -f "$candidate_path" 2>/dev/null || true)"
+    if [ -z "$resolved_path" ] && command_exists realpath; then
+        resolved_path="$(realpath "$candidate_path" 2>/dev/null || true)"
+    fi
+
+    if [ -z "$resolved_path" ]; then
+        case "$candidate_path" in
+            /*)
+                resolved_path="$candidate_path"
+                ;;
+            *)
+                resolved_path="$(pwd)/$candidate_path"
+                ;;
+        esac
+    fi
+
+    printf '%s\n' "$resolved_path"
+}
+
 get_management_script_path() {
     if [ -n "$MANAGEMENT_SCRIPT_PATH" ]; then
         printf '%s\n' "$MANAGEMENT_SCRIPT_PATH"
         return 0
     fi
 
-    if [ -x "$INSTALLED_SCRIPT_PATH" ]; then
-        MANAGEMENT_SCRIPT_PATH="$INSTALLED_SCRIPT_PATH"
+    if [ -n "$ORIGINAL_SCRIPT_PATH" ]; then
+        MANAGEMENT_SCRIPT_PATH="$(resolve_script_path "$ORIGINAL_SCRIPT_PATH")"
     else
-        MANAGEMENT_SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || true)"
-
-        if [ -z "$MANAGEMENT_SCRIPT_PATH" ] && command_exists realpath; then
-            MANAGEMENT_SCRIPT_PATH="$(realpath "$0" 2>/dev/null || true)"
-        fi
-
-        if [ -z "$MANAGEMENT_SCRIPT_PATH" ]; then
-            MANAGEMENT_SCRIPT_PATH="$0"
-        fi
+        MANAGEMENT_SCRIPT_PATH="$(resolve_script_path "$0")"
     fi
 
     printf '%s\n' "$MANAGEMENT_SCRIPT_PATH"
@@ -99,13 +127,15 @@ format_script_command() {
     printf 'sudo %q' "$script_path"
 
     for arg in "$@"; do
-        printf ' %s' "$arg"
+        printf ' %q' "$arg"
     done
 
     printf '\n'
 }
 
 ensure_script_available() {
+    local original_script_path=""
+
     if [ "$(readlink -f "$0")" = "$INSTALLED_SCRIPT_PATH" ]; then
         return 0
     fi
@@ -120,8 +150,9 @@ ensure_script_available() {
     fi
 
     if sudo install -m 755 "$0" "$INSTALLED_SCRIPT_PATH"; then
+        original_script_path="$(resolve_script_path "$0")"
         print_status "Скрипт скопирован. Перезапуск из $INSTALL_PATH..."
-        exec sudo "$INSTALLED_SCRIPT_PATH" "$@"
+        exec sudo env MTPROXY_SCRIPT_ORIGINAL_PATH="$original_script_path" "$INSTALLED_SCRIPT_PATH" "$@"
     fi
 
     print_error "Не удалось установить скрипт в $INSTALL_PATH."
