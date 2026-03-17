@@ -33,9 +33,19 @@
 - возможность открыть внешний TCP-порт на сервере и у провайдера или в облачном firewall;
 - доступ к GitHub и `https://core.telegram.org`.
 
-## Базовая установка
+## Быстрый запуск одной командой
 
-Запустите скрипт из каталога репозитория:
+Если не хотите клонировать репозиторий, можно сразу скачать и запустить установочный скрипт одной командой:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gitKBDL/mtproxy-script/main/install_mtproxy.sh -o /tmp/install_mtproxy.sh && chmod +x /tmp/install_mtproxy.sh && sudo /tmp/install_mtproxy.sh
+```
+
+Эта команда скачивает актуальный `install_mtproxy.sh` напрямую из GitHub, делает его исполняемым и сразу запускает установку.
+
+## Запуск из репозитория
+
+Если репозиторий уже клонирован, запустите скрипт из каталога проекта:
 
 ```bash
 chmod +x ./install_mtproxy.sh
