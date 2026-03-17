@@ -34,6 +34,7 @@ SYSCTL_SETTING="net.core.somaxconn = 1024"
 
 DEFAULT_EXTERNAL_PORT=443
 DEFAULT_INTERNAL_PORT=8008
+PUBLIC_IP_PLACEHOLDER="ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС"
 
 CURRENT_SECRET=""
 CURRENT_EXTERNAL_PORT=""
@@ -205,8 +206,77 @@ prompt_for_port() {
     done
 }
 
-get_public_ip() {
-    curl -fsSL ifconfig.me 2>/dev/null || curl -fsSL ipinfo.io/ip 2>/dev/null || echo "ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС"
+sanitize_ip_candidate() {
+    local value="$1"
+
+    value="$(printf '%s\n' "$value" | head -n 1)"
+    value="${value//$'\r'/}"
+    value="${value//[[:space:]]/}"
+
+    printf '%s\n' "$value"
+}
+
+is_valid_ipv4() {
+    local ip="$1"
+    local IFS='.'
+    local -a octets=()
+    local octet=""
+
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+
+    read -r -a octets <<< "$ip"
+    [ "${#octets[@]}" -eq 4 ] || return 1
+
+    for octet in "${octets[@]}"; do
+        (( 10#$octet <= 255 )) || return 1
+    done
+
+    return 0
+}
+
+is_valid_ipv6() {
+    local ip="$1"
+
+    [[ "$ip" == *:* ]] || return 1
+    [[ "$ip" =~ [0-9A-Fa-f] ]] || return 1
+    [[ "$ip" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+
+    return 0
+}
+
+fetch_public_ip() {
+    local ip_version="$1"
+    local validator="$2"
+    shift 2
+
+    local url=""
+    local response=""
+
+    for url in "$@"; do
+        response="$(curl "-${ip_version}" -fsSL --connect-timeout 3 --max-time 5 "$url" 2>/dev/null || true)"
+        response="$(sanitize_ip_candidate "$response")"
+
+        if [ -n "$response" ] && "$validator" "$response"; then
+            printf '%s\n' "$response"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+get_public_ipv4() {
+    fetch_public_ip 4 is_valid_ipv4 \
+        "https://api.ipify.org" \
+        "https://ipv4.icanhazip.com" \
+        "https://ifconfig.me/ip" || true
+}
+
+get_public_ipv6() {
+    fetch_public_ip 6 is_valid_ipv6 \
+        "https://api6.ipify.org" \
+        "https://ipv6.icanhazip.com" \
+        "https://ifconfig.me/ip" || true
 }
 
 get_config_value() {
@@ -421,10 +491,24 @@ print_management_commands() {
     echo "sudo $SCRIPT_NAME delete"
 }
 
-print_mtproxy_details() {
-    local server_ip=""
+print_proxy_links() {
+    local label="$1"
+    local server_ip="$2"
 
-    server_ip="$(get_public_ip)"
+    [ -n "$server_ip" ] || return 0
+
+    echo -e "${GREEN}*${NC} Ссылка (${label}):"
+    echo -e "${GREEN}*${NC} https://t.me/proxy?server=${server_ip}&port=${CURRENT_EXTERNAL_PORT}&secret=${CURRENT_SECRET}"
+    echo -e "${GREEN}*${NC} Ссылка ТОЛЬКО для приложения (${label}):"
+    echo -e "${GREEN}*${NC} tg://proxy?server=${server_ip}&port=${CURRENT_EXTERNAL_PORT}&secret=${CURRENT_SECRET}"
+}
+
+print_mtproxy_details() {
+    local public_ipv4=""
+    local public_ipv6=""
+
+    public_ipv4="$(get_public_ipv4)"
+    public_ipv6="$(get_public_ipv6)"
 
     print_header "Сведения о MTProxy"
     echo -e "${BLUE}ВАЖНОЕ НАПОМИНАНИЕ!${NC}"
@@ -432,11 +516,20 @@ print_mtproxy_details() {
     echo -e "${GREEN}*${NC} Внешний порт (Интернет <-> MTProxy): ${CURRENT_EXTERNAL_PORT}"
     echo -e "${GREEN}*${NC} Внутренний порт (MTProxy <-> Telegram): ${CURRENT_INTERNAL_PORT}"
 
-    if [ "$server_ip" = "ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС" ]; then
-        print_warning "Не удалось определить публичный IP. Используйте ваш реальный публичный IP вместо 'ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС'."
+    if [ -z "$public_ipv4" ] && [ -z "$public_ipv6" ]; then
+        print_warning "Не удалось определить публичные IPv4 и IPv6 адреса. Используйте ваш реальный публичный IP вместо 'ВАШ_ПУБЛИЧНЫЙ_IP_АДРЕС'."
+    elif [ -z "$public_ipv4" ] && [ -n "$public_ipv6" ]; then
+        print_warning "Публичный IPv4 определить не удалось. Выведены ссылки только для IPv6."
     fi
 
-    echo -e "${GREEN}*${NC} Публичный IP сервера: ${server_ip}"
+    if [ -n "$public_ipv4" ]; then
+        echo -e "${GREEN}*${NC} Публичный IPv4 сервера: ${public_ipv4}"
+    fi
+
+    if [ -n "$public_ipv6" ]; then
+        echo -e "${GREEN}*${NC} Публичный IPv6 сервера: ${public_ipv6}"
+    fi
+
     echo -e "${GREEN}*${NC} Секрет MTProxy: ${CURRENT_SECRET}"
 
     if [ -n "$CURRENT_ADTAG" ]; then
@@ -445,10 +538,17 @@ print_mtproxy_details() {
         print_warning "adtag пока не задан. После регистрации прокси в @MTProxybot выполните: sudo $SCRIPT_NAME update-adtag"
     fi
 
-    echo -e "${GREEN}*${NC} Ссылка:"
-    echo -e "${GREEN}*${NC} https://t.me/proxy?server=${server_ip}&port=${CURRENT_EXTERNAL_PORT}&secret=${CURRENT_SECRET}"
-    echo -e "${GREEN}*${NC} Ссылка ТОЛЬКО для приложения:"
-    echo -e "${GREEN}*${NC} tg://proxy?server=${server_ip}&port=${CURRENT_EXTERNAL_PORT}&secret=${CURRENT_SECRET}"
+    if [ -n "$public_ipv4" ]; then
+        print_proxy_links "IPv4" "$public_ipv4"
+    fi
+
+    if [ -n "$public_ipv6" ]; then
+        print_proxy_links "IPv6" "$public_ipv6"
+    fi
+
+    if [ -z "$public_ipv4" ] && [ -z "$public_ipv6" ]; then
+        print_proxy_links "укажите адрес вручную" "$PUBLIC_IP_PLACEHOLDER"
+    fi
 }
 
 print_adtag_help() {
@@ -496,32 +596,6 @@ apply_adtag_change() {
     else
         print_status "adtag удалён (${context})."
     fi
-}
-
-offer_install_adtag_setup() {
-    local install_adtag=""
-
-    if [ ! -t 0 ]; then
-        print_warning "Интерактивная настройка adtag пропущена, потому что stdin не является TTY."
-        return 0
-    fi
-
-    if ! mtproxy_supports_adtag; then
-        print_warning "Собранный бинарник не сообщает о поддержке параметра proxy-tag. Настройка adtag пропущена."
-        return 0
-    fi
-
-    print_header "Необязательная настройка adtag"
-    echo "Если вы уже получили adtag в @MTProxybot, его можно применить прямо сейчас."
-    echo "Если adtag пока нет — просто нажмите Enter и настройте его позже командой: sudo $SCRIPT_NAME update-adtag"
-    prompt_for_adtag_value install_adtag true
-
-    if [ -z "$install_adtag" ]; then
-        print_status "Настройка adtag отложена."
-        return 0
-    fi
-
-    apply_adtag_change "$install_adtag" "сразу после установки"
 }
 
 update_mtproxy_secret() {
@@ -1036,8 +1110,6 @@ install_mtproxy() {
     print_header "Установка MTProxy завершена!"
     echo -e "${GREEN}* ${NC}MTProxy успешно установлен и запущен в фоновом режиме."
     print_adtag_help
-    offer_install_adtag_setup
-    load_current_settings
     print_management_commands
     print_mtproxy_details
     print_header "Приятного использования!"
